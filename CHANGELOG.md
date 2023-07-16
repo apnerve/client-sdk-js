@@ -1,5 +1,11 @@
 # Change Log
 
+## 1.12.2
+
+### Patch Changes
+
+- Support for region pinning with LiveKit Cloud using prepareConnection - [#783](https://github.com/livekit/client-sdk-js/pull/783) ([@davidzhao](https://github.com/davidzhao))
+
 ## 1.12.1
 
 ### Patch Changes

@@ -1,3 +1,5 @@
+import { DisconnectReason, RequestResponse_Reason } from '@livekit/protocol';
+
 export class LivekitError extends Error {
   code: number;
 
@@ -12,17 +14,26 @@ export const enum ConnectionErrorReason {
   ServerUnreachable,
   InternalError,
   Cancelled,
+  LeaveRequest,
 }
 
 export class ConnectionError extends LivekitError {
   status?: number;
 
-  reason?: ConnectionErrorReason;
+  context?: unknown | DisconnectReason;
 
-  constructor(message?: string, reason?: ConnectionErrorReason, status?: number) {
+  reason: ConnectionErrorReason;
+
+  constructor(
+    message: string,
+    reason: ConnectionErrorReason,
+    status?: number,
+    context?: unknown | DisconnectReason,
+  ) {
     super(1, message);
     this.status = status;
     this.reason = reason;
+    this.context = context;
   }
 }
 
@@ -59,6 +70,19 @@ export class NegotiationError extends LivekitError {
 export class PublishDataError extends LivekitError {
   constructor(message?: string) {
     super(13, message ?? 'unable to publish data');
+  }
+}
+
+export type RequestErrorReason =
+  | Exclude<RequestResponse_Reason, RequestResponse_Reason.OK>
+  | 'TimeoutError';
+
+export class SignalRequestError extends LivekitError {
+  reason: RequestErrorReason;
+
+  constructor(message: string, reason: RequestErrorReason) {
+    super(15, message);
+    this.reason = reason;
   }
 }
 

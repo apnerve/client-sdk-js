@@ -2,10 +2,8 @@ import type { KeyProviderOptions } from './types';
 
 export const ENCRYPTION_ALGORITHM = 'AES-GCM';
 
-// We use a ringbuffer of keys so we can change them and still decode packets that were
-// encrypted with an old key. We use a size of 16 which corresponds to the four bits
-// in the frame trailer.
-export const KEYRING_SIZE = 16;
+// How many consecutive frames can fail decrypting before a particular key gets marked as invalid
+export const DECRYPTION_FAILURE_TOLERANCE = 10;
 
 // We copy the first bytes of the VP8 payload unencrypted.
 // For keyframes this is 10 bytes, for non-keyframes (delta) 3. See
@@ -37,4 +35,9 @@ export const KEY_PROVIDER_DEFAULTS: KeyProviderOptions = {
   sharedKey: false,
   ratchetSalt: SALT,
   ratchetWindowSize: 8,
+  failureTolerance: DECRYPTION_FAILURE_TOLERANCE,
+  keyringSize: 16,
 } as const;
+
+export const MAX_SIF_COUNT = 100;
+export const MAX_SIF_DURATION = 2000;

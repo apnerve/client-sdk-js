@@ -1,4 +1,5 @@
-import EventEmitter from 'eventemitter3';
+import { EventEmitter } from 'events';
+import type TypedEmitter from 'typed-emitter';
 import type { RoomConnectOptions, RoomOptions } from '../../options';
 import type RTCEngine from '../../room/RTCEngine';
 import Room, { ConnectionState } from '../../room/Room';
@@ -29,7 +30,7 @@ export interface CheckerOptions {
   connectOptions?: RoomConnectOptions;
 }
 
-export abstract class Checker extends EventEmitter<CheckerCallbacks> {
+export abstract class Checker extends (EventEmitter as new () => TypedEmitter<CheckerCallbacks>) {
   protected url: string;
 
   protected token: string;
@@ -67,7 +68,6 @@ export abstract class Checker extends EventEmitter<CheckerCallbacks> {
       throw Error('check is running already');
     }
     this.setStatus(CheckStatus.RUNNING);
-    this.appendMessage(`${this.name} started.`);
 
     try {
       await this.perform();
@@ -105,7 +105,7 @@ export abstract class Checker extends EventEmitter<CheckerCallbacks> {
     if (this.room.state === ConnectionState.Connected) {
       return this.room;
     }
-    await this.room.connect(this.url, this.token);
+    await this.room.connect(this.url, this.token, this.connectOptions);
     return this.room;
   }
 

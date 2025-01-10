@@ -1,23 +1,35 @@
-import EventEmitter from 'eventemitter3';
-import log from '../../logger';
 import {
   DataPacket_Kind,
   ParticipantInfo,
+  ParticipantInfo_Kind as ParticipantKind,
   ParticipantPermission,
   ConnectionQuality as ProtoQuality,
+  type SipDTMF,
   SubscriptionError,
-} from '../../proto/livekit_models';
+} from '@livekit/protocol';
+import { EventEmitter } from 'events';
+import type TypedEmitter from 'typed-emitter';
+import log, { LoggerNames, type StructuredLogger, getLogger } from '../../logger';
 import { ParticipantEvent, TrackEvent } from '../events';
+import LocalAudioTrack from '../track/LocalAudioTrack';
 import type LocalTrackPublication from '../track/LocalTrackPublication';
+import RemoteAudioTrack from '../track/RemoteAudioTrack';
 import type RemoteTrack from '../track/RemoteTrack';
 import type RemoteTrackPublication from '../track/RemoteTrackPublication';
 import { Track } from '../track/Track';
 import type { TrackPublication } from '../track/TrackPublication';
+import { diffAttributes } from '../track/utils';
+import type { ChatMessage, LoggerOptions, TranscriptionSegment } from '../types';
 
 export enum ConnectionQuality {
   Excellent = 'excellent',
   Good = 'good',
   Poor = 'poor',
+  /**
+   * Indicates that a participant has temporarily (or permanently) lost connection to LiveKit.
+   * For permanent disconnection a `ParticipantDisconnected` event will be emitted after a timeout
+   */
+  Lost = 'lost',
   Unknown = 'unknown',
 }
 
@@ -29,20 +41,24 @@ function qualityFromProto(q: ProtoQuality): ConnectionQuality {
       return ConnectionQuality.Good;
     case ProtoQuality.POOR:
       return ConnectionQuality.Poor;
+    case ProtoQuality.LOST:
+      return ConnectionQuality.Lost;
     default:
       return ConnectionQuality.Unknown;
   }
 }
 
-export default class Participant extends EventEmitter<ParticipantEventCallbacks> {
+export { ParticipantKind };
+
+export default class Participant extends (EventEmitter as new () => TypedEmitter<ParticipantEventCallbacks>) {
   protected participantInfo?: ParticipantInfo;
 
-  audioTracks: Map<string, TrackPublication>;
+  audioTrackPublications: Map<string, TrackPublication>;
 
-  videoTracks: Map<string, TrackPublication>;
+  videoTrackPublications: Map<string, TrackPublication>;
 
   /** map of track sid => all published tracks */
-  tracks: Map<string, TrackPublication>;
+  trackPublications: Map<string, TrackPublication>;
 
   /** audio level between 0-1.0, 1 being loudest, 0 being softest */
   audioLevel: number = 0;
@@ -62,40 +78,85 @@ export default class Participant extends EventEmitter<ParticipantEventCallbacks>
   /** client metadata, opaque to livekit */
   metadata?: string;
 
+  private _attributes: Record<string, string>;
+
   lastSpokeAt?: Date | undefined;
 
   permissions?: ParticipantPermission;
 
+  protected _kind: ParticipantKind;
+
   private _connectionQuality: ConnectionQuality = ConnectionQuality.Unknown;
 
+  protected audioContext?: AudioContext;
+
+  protected log: StructuredLogger = log;
+
+  protected loggerOptions?: LoggerOptions;
+
+  protected get logContext() {
+    return {
+      ...this.loggerOptions?.loggerContextCb?.(),
+    };
+  }
+
   get isEncrypted() {
-    return this.tracks.size > 0 && Array.from(this.tracks.values()).every((tr) => tr.isEncrypted);
+    return (
+      this.trackPublications.size > 0 &&
+      Array.from(this.trackPublications.values()).every((tr) => tr.isEncrypted)
+    );
+  }
+
+  get isAgent() {
+    return this.permissions?.agent || this.kind === ParticipantKind.AGENT;
+  }
+
+  get kind() {
+    return this._kind;
+  }
+
+  /** participant attributes, similar to metadata, but as a key/value map */
+  get attributes(): Readonly<Record<string, string>> {
+    return Object.freeze({ ...this._attributes });
   }
 
   /** @internal */
-  constructor(sid: string, identity: string, name?: string, metadata?: string) {
+  constructor(
+    sid: string,
+    identity: string,
+    name?: string,
+    metadata?: string,
+    attributes?: Record<string, string>,
+    loggerOptions?: LoggerOptions,
+    kind: ParticipantKind = ParticipantKind.STANDARD,
+  ) {
     super();
+
+    this.log = getLogger(loggerOptions?.loggerName ?? LoggerNames.Participant);
+    this.loggerOptions = loggerOptions;
+
+    this.setMaxListeners(100);
     this.sid = sid;
     this.identity = identity;
     this.name = name;
     this.metadata = metadata;
-    this.audioTracks = new Map();
-    this.videoTracks = new Map();
-    this.tracks = new Map();
+    this.audioTrackPublications = new Map();
+    this.videoTrackPublications = new Map();
+    this.trackPublications = new Map();
+    this._kind = kind;
+    this._attributes = attributes ?? {};
   }
 
-  getTracks(): TrackPublication[] {
-    return Array.from(this.tracks.values());
+  getTrackPublications(): TrackPublication[] {
+    return Array.from(this.trackPublications.values());
   }
 
   /**
    * Finds the first track that matches the source filter, for example, getting
    * the user's camera track with getTrackBySource(Track.Source.Camera).
-   * @param source
-   * @returns
    */
-  getTrack(source: Track.Source): TrackPublication | undefined {
-    for (const [, pub] of this.tracks) {
+  getTrackPublication(source: Track.Source): TrackPublication | undefined {
+    for (const [, pub] of this.trackPublications) {
       if (pub.source === source) {
         return pub;
       }
@@ -104,11 +165,9 @@ export default class Participant extends EventEmitter<ParticipantEventCallbacks>
 
   /**
    * Finds the first track that matches the track's name.
-   * @param name
-   * @returns
    */
-  getTrackByName(name: string): TrackPublication | undefined {
-    for (const [, pub] of this.tracks) {
+  getTrackPublicationByName(name: string): TrackPublication | undefined {
+    for (const [, pub] of this.trackPublications) {
       if (pub.trackName === name) {
         return pub;
       }
@@ -120,17 +179,17 @@ export default class Participant extends EventEmitter<ParticipantEventCallbacks>
   }
 
   get isCameraEnabled(): boolean {
-    const track = this.getTrack(Track.Source.Camera);
+    const track = this.getTrackPublication(Track.Source.Camera);
     return !(track?.isMuted ?? true);
   }
 
   get isMicrophoneEnabled(): boolean {
-    const track = this.getTrack(Track.Source.Microphone);
+    const track = this.getTrackPublication(Track.Source.Microphone);
     return !(track?.isMuted ?? true);
   }
 
   get isScreenShareEnabled(): boolean {
-    const track = this.getTrack(Track.Source.ScreenShare);
+    const track = this.getTrackPublication(Track.Source.ScreenShare);
     return !!track;
   }
 
@@ -141,7 +200,7 @@ export default class Participant extends EventEmitter<ParticipantEventCallbacks>
   /** when participant joined the room */
   get joinedAt(): Date | undefined {
     if (this.participantInfo) {
-      return new Date(this.participantInfo.joinedAt * 1000);
+      return new Date(Number.parseInt(this.participantInfo.joinedAt.toString()) * 1000);
     }
     return new Date();
   }
@@ -163,19 +222,22 @@ export default class Participant extends EventEmitter<ParticipantEventCallbacks>
     }
     this.identity = info.identity;
     this.sid = info.sid;
-    this.setName(info.name);
-    this.setMetadata(info.metadata);
+    this._setName(info.name);
+    this._setMetadata(info.metadata);
+    this._setAttributes(info.attributes);
     if (info.permission) {
       this.setPermissions(info.permission);
     }
     // set this last so setMetadata can detect changes
     this.participantInfo = info;
-    log.trace('update participant info', { info });
+    this.log.trace('update participant info', { ...this.logContext, info });
     return true;
   }
 
-  /** @internal */
-  setMetadata(md: string) {
+  /**
+   * Updates metadata from server
+   **/
+  private _setMetadata(md: string) {
     const changed = this.metadata !== md;
     const prevMetadata = this.metadata;
     this.metadata = md;
@@ -185,12 +247,24 @@ export default class Participant extends EventEmitter<ParticipantEventCallbacks>
     }
   }
 
-  protected setName(name: string) {
+  private _setName(name: string) {
     const changed = this.name !== name;
     this.name = name;
 
     if (changed) {
       this.emit(ParticipantEvent.ParticipantNameChanged, name);
+    }
+  }
+
+  /**
+   * Updates metadata from server
+   **/
+  private _setAttributes(attributes: Record<string, string>) {
+    const diff = diffAttributes(this.attributes, attributes);
+    this._attributes = attributes;
+
+    if (Object.keys(diff).length > 0) {
+      this.emit(ParticipantEvent.AttributesChanged, diff);
     }
   }
 
@@ -206,7 +280,8 @@ export default class Participant extends EventEmitter<ParticipantEventCallbacks>
       permissions.canPublishSources.length !== this.permissions.canPublishSources.length ||
       permissions.canPublishSources.some(
         (value, index) => value !== this.permissions?.canPublishSources[index],
-      );
+      ) ||
+      permissions.canSubscribeMetrics !== this.permissions?.canSubscribeMetrics;
     this.permissions = permissions;
 
     if (changed) {
@@ -236,6 +311,18 @@ export default class Participant extends EventEmitter<ParticipantEventCallbacks>
     }
   }
 
+  /**
+   * @internal
+   */
+  setAudioContext(ctx: AudioContext | undefined) {
+    this.audioContext = ctx;
+    this.audioTrackPublications.forEach(
+      (track) =>
+        (track.track instanceof RemoteAudioTrack || track.track instanceof LocalAudioTrack) &&
+        track.track.setAudioContext(ctx),
+    );
+  }
+
   protected addTrackPublication(publication: TrackPublication) {
     // forward publication driven events
     publication.on(TrackEvent.Muted, () => {
@@ -251,13 +338,13 @@ export default class Participant extends EventEmitter<ParticipantEventCallbacks>
       pub.track.sid = publication.trackSid;
     }
 
-    this.tracks.set(publication.trackSid, publication);
+    this.trackPublications.set(publication.trackSid, publication);
     switch (publication.kind) {
       case Track.Kind.Audio:
-        this.audioTracks.set(publication.trackSid, publication);
+        this.audioTrackPublications.set(publication.trackSid, publication);
         break;
       case Track.Kind.Video:
-        this.videoTracks.set(publication.trackSid, publication);
+        this.videoTrackPublications.set(publication.trackSid, publication);
         break;
       default:
         break;
@@ -278,6 +365,11 @@ export type ParticipantEventCallbacks = {
   participantMetadataChanged: (prevMetadata: string | undefined, participant?: any) => void;
   participantNameChanged: (name: string) => void;
   dataReceived: (payload: Uint8Array, kind: DataPacket_Kind) => void;
+  sipDTMFReceived: (dtmf: SipDTMF) => void;
+  transcriptionReceived: (
+    transcription: TranscriptionSegment[],
+    publication?: TrackPublication,
+  ) => void;
   isSpeakingChanged: (speaking: boolean) => void;
   connectionQualityChanged: (connectionQuality: ConnectionQuality) => void;
   trackStreamStateChanged: (
@@ -289,9 +381,13 @@ export type ParticipantEventCallbacks = {
     status: TrackPublication.PermissionStatus,
   ) => void;
   mediaDevicesError: (error: Error) => void;
+  audioStreamAcquired: () => void;
   participantPermissionsChanged: (prevPermissions?: ParticipantPermission) => void;
   trackSubscriptionStatusChanged: (
     publication: RemoteTrackPublication,
     status: TrackPublication.SubscriptionStatus,
   ) => void;
+  attributesChanged: (changedAttributes: Record<string, string>) => void;
+  localTrackSubscribed: (trackPublication: LocalTrackPublication) => void;
+  chatMessage: (msg: ChatMessage) => void;
 };

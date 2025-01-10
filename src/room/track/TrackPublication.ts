@@ -1,17 +1,24 @@
-import EventEmitter from 'eventemitter3';
-import log from '../../logger';
-import { Encryption_Type } from '../../proto/livekit_models';
-import type { SubscriptionError, TrackInfo } from '../../proto/livekit_models';
-import type { UpdateSubscription, UpdateTrackSettings } from '../../proto/livekit_rtc';
+import { Encryption_Type } from '@livekit/protocol';
+import type {
+  SubscriptionError,
+  TrackInfo,
+  UpdateSubscription,
+  UpdateTrackSettings,
+} from '@livekit/protocol';
+import { EventEmitter } from 'events';
+import type TypedEventEmitter from 'typed-emitter';
+import log, { LoggerNames, getLogger } from '../../logger';
 import { TrackEvent } from '../events';
+import type { LoggerOptions, TranscriptionSegment } from '../types';
 import LocalAudioTrack from './LocalAudioTrack';
 import LocalVideoTrack from './LocalVideoTrack';
 import RemoteAudioTrack from './RemoteAudioTrack';
 import type RemoteTrack from './RemoteTrack';
 import RemoteVideoTrack from './RemoteVideoTrack';
 import { Track } from './Track';
+import { getLogContextFromTrack } from './utils';
 
-export class TrackPublication extends EventEmitter<PublicationEventCallbacks> {
+export class TrackPublication extends (EventEmitter as new () => TypedEventEmitter<PublicationEventCallbacks>) {
   kind: Track.Kind;
 
   trackName: string;
@@ -38,8 +45,15 @@ export class TrackPublication extends EventEmitter<PublicationEventCallbacks> {
 
   protected encryption: Encryption_Type = Encryption_Type.NONE;
 
-  constructor(kind: Track.Kind, id: string, name: string) {
+  protected log = log;
+
+  private loggerContextCb?: LoggerOptions['loggerContextCb'];
+
+  constructor(kind: Track.Kind, id: string, name: string, loggerOptions?: LoggerOptions) {
     super();
+    this.log = getLogger(loggerOptions?.loggerName ?? LoggerNames.Publication);
+    this.loggerContextCb = this.loggerContextCb;
+    this.setMaxListeners(100);
     this.kind = kind;
     this.trackSid = id;
     this.trackName = name;
@@ -60,6 +74,13 @@ export class TrackPublication extends EventEmitter<PublicationEventCallbacks> {
       track.on(TrackEvent.Muted, this.handleMuted);
       track.on(TrackEvent.Unmuted, this.handleUnmuted);
     }
+  }
+
+  protected get logContext() {
+    return {
+      ...this.loggerContextCb?.(),
+      ...getLogContextFromTrack(this),
+    };
   }
 
   get isMuted(): boolean {
@@ -119,7 +140,7 @@ export class TrackPublication extends EventEmitter<PublicationEventCallbacks> {
     }
     this.encryption = info.encryption;
     this.trackInfo = info;
-    log.debug('update publication info', { info });
+    this.log.debug('update publication info', { ...this.logContext, info });
   }
 }
 
@@ -153,4 +174,6 @@ export type PublicationEventCallbacks = {
     prevStatus: TrackPublication.SubscriptionStatus,
   ) => void;
   subscriptionFailed: (error: SubscriptionError) => void;
+  transcriptionReceived: (transcription: TranscriptionSegment[]) => void;
+  timeSyncUpdate: (timestamp: number) => void;
 };

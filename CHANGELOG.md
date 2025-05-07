@@ -1,5 +1,11 @@
 # Change Log
 
+## 2.11.5
+
+### Patch Changes
+
+- Catch failing set sink id promise - [#1508](https://github.com/livekit/client-sdk-js/pull/1508) ([@lukasIO](https://github.com/lukasIO))
+
 ## 2.11.4
 
 ### Patch Changes

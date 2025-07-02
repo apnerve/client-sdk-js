@@ -1,5 +1,13 @@
 # Change Log
 
+## 2.14.1
+
+### Patch Changes
+
+- allow manual controls even when adaptiveStream is enabled - [#1569](https://github.com/livekit/client-sdk-js/pull/1569) ([@davidzhao](https://github.com/davidzhao))
+
+- Update active device immediately for muted video tracks - [#1573](https://github.com/livekit/client-sdk-js/pull/1573) ([@yashjain-99](https://github.com/yashjain-99))
+
 ## 2.14.0
 
 ### Minor Changes

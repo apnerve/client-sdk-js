@@ -1,5 +1,11 @@
 # Change Log
 
+## 2.15.7
+
+### Patch Changes
+
+- Ensure mid is always interpreted as string - [#1641](https://github.com/livekit/client-sdk-js/pull/1641) ([@lukasIO](https://github.com/lukasIO))
+
 ## 2.15.6
 
 ### Patch Changes

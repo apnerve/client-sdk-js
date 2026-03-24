@@ -1,5 +1,11 @@
 # Change Log
 
+## 2.18.1
+
+### Patch Changes
+
+- Enable E2EE key-size configuration via ExternalE2EEKeyProvider options - [#1841](https://github.com/livekit/client-sdk-js/pull/1841) ([@MariusBernhardt](https://github.com/MariusBernhardt))
+
 ## 2.18.0
 
 ### Minor Changes

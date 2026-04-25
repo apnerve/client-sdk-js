@@ -1,5 +1,11 @@
 # Change Log
 
+## 2.18.7
+
+### Patch Changes
+
+- Pass optional LocalTrack reference to processors - [#1916](https://github.com/livekit/client-sdk-js/pull/1916) ([@lukasIO](https://github.com/lukasIO))
+
 ## 2.18.6
 
 ### Patch Changes
